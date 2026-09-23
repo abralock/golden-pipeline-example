@@ -1,0 +1,24 @@
+# Makefile contract - Node / TypeScript (Jest) starter.
+# devDependencies: jest, jest-junit
+.PHONY: setup lint test coverage build
+
+setup:
+	npm ci
+
+lint:
+	npx eslint . --max-warnings=0
+	npx tsc --noEmit
+
+test:
+	npx jest
+
+coverage:
+	mkdir -p reports
+	JEST_JUNIT_OUTPUT_DIR=reports JEST_JUNIT_OUTPUT_NAME=junit.xml \
+	  npx jest --ci --coverage --coverageReporters=cobertura --coverageDirectory=reports \
+	  --reporters=default --reporters=jest-junit
+	mv reports/cobertura-coverage.xml reports/coverage.xml
+
+build:
+	npm run build
+	mkdir -p dist

@@ -1,0 +1,17 @@
+# Phase 3 enforcement on GitLab (Ultimate): inject the gates into EVERY project in scope,
+# even if a team deletes the include from its .gitlab-ci.yml.
+# Store in the group's security policy project as .gitlab/security-policies/policy.yml.
+# Validate field names against your GitLab version before rollout.
+pipeline_execution_policy:
+  - name: Platform quality gates
+    description: Unit tests, 80% new-code coverage, secret/IaC scanning, MR title format
+    enabled: true
+    pipeline_config_strategy: inject_policy
+    content:
+      include:
+        - project: platform/ci-templates
+          file: templates/golden-pipeline.yml
+          ref: v1.0.0
+    policy_scope:
+      compliance_frameworks:
+        - id: 1        # e.g. "Tier-1 production services" framework

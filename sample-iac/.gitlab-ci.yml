@@ -1,0 +1,4 @@
+# Same one-line include as code repos. The component sees no build manifests,
+# so contract / unit-test / coverage jobs are simply not created.
+include:
+  - component: $CI_SERVER_FQDN/platform/ci-templates/golden-pipeline@1.0.0

@@ -1,0 +1,9 @@
+reports/
+dist/
+build/
+*.egg-info/
+.coverage
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+profile.env

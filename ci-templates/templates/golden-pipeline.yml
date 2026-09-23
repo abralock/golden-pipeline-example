@@ -1,0 +1,155 @@
+# GitLab CI/CD component: platform/ci-templates/golden-pipeline
+# Teams include it with ONE line (see sample-service/.gitlab-ci.yml).
+# GitLab requires components to live in templates/ at the repo root.
+spec:
+  inputs:
+    build_image:
+      description: Image containing the team's language SDK + make. Runs the Makefile targets.
+      default: registry.corp.example/platform/build-python:3.12
+    toolbox_image:
+      description: Platform-owned image with all gate tools (see toolbox/Dockerfile).
+      default: registry.corp.example/platform/ci-toolbox:1.0.0
+    coverage_format:
+      options: [cobertura, jacoco]
+      default: cobertura
+    min_new_coverage:
+      description: Minimum line coverage on NEW/CHANGED lines in an MR. Not negotiable per team.
+      type: number
+      default: 80
+    min_overall_coverage:
+      description: Floor for whole-repo coverage. Legacy repos start low and ratchet up.
+      type: number
+      default: 0
+    mode:
+      description: warn = report only (rollout phase 1), enforce = block the MR
+      options: [warn, enforce]
+      default: enforce
+---
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS   # avoid duplicate branch + MR pipelines
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+stages: [validate, test, quality, build, release]
+
+# Files that mean "this repo has application code". If ANY exist, the code gates run.
+# A repo cannot skip unit tests/coverage by declaring itself "iac" in repo.yaml.
+.qg-code-files: &code_files
+  - pom.xml
+  - build.gradle
+  - build.gradle.kts
+  - "**/*.csproj"
+  - "**/*.sln"
+  - package.json
+  - go.mod
+  - pyproject.toml
+  - setup.py
+
+.qg-toolbox:
+  image: $[[ inputs.toolbox_image ]]
+  variables:
+    QG_MODE: $[[ inputs.mode ]]
+
+# ---------------------------------------------------------------- validate
+qg:detect-profile:
+  extends: .qg-toolbox
+  stage: validate
+  script:
+    - detect-profile.sh
+  artifacts:
+    reports:
+      dotenv: profile.env
+
+qg:mr-title:
+  extends: .qg-toolbox
+  stage: validate
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - lint-title.sh "$CI_MERGE_REQUEST_TITLE"
+
+qg:static-lint:           # secrets, shellcheck, yamllint, checkov - ALL repos
+  extends: .qg-toolbox
+  stage: validate
+  script:
+    - static-lint.sh
+
+qg:contract:
+  extends: .qg-toolbox
+  stage: validate
+  rules:
+    - exists: *code_files
+  script:
+    - check-contract.sh
+
+# ---------------------------------------------------------------- test
+qg:unit-test:
+  image: $[[ inputs.build_image ]]
+  stage: test
+  needs: [qg:contract]
+  rules:
+    - exists: *code_files
+  script:
+    - make setup
+    - make lint
+    - make coverage        # contract: writes reports/junit.xml + reports/coverage.xml
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [reports/]
+    reports:
+      junit: reports/junit*.xml
+      coverage_report:     # shows covered/uncovered lines inline in the MR diff
+        coverage_format: $[[ inputs.coverage_format ]]
+        path: reports/coverage.xml
+
+# ---------------------------------------------------------------- quality
+qg:quality-gate:
+  extends: .qg-toolbox
+  stage: quality
+  needs: [qg:unit-test]
+  rules:
+    - exists: *code_files
+  variables:
+    QG_MODE: $[[ inputs.mode ]]   # job-level variables replace the extended ones, so repeat it
+    GIT_DEPTH: 0           # diff-cover needs history to compute "new lines"
+  script:
+    - |
+      CMP=""
+      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ]; then
+        git fetch --no-tags origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+        CMP="--compare-branch=origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+      fi
+      quality_gate.py \
+        --min-overall "$[[ inputs.min_overall_coverage ]]" \
+        --min-new "$[[ inputs.min_new_coverage ]]" $CMP
+  artifacts:
+    when: always
+    paths: [reports/new-code-coverage.md]
+
+# ---------------------------------------------------------------- build (main + tags only)
+qg:build:
+  image: $[[ inputs.build_image ]]
+  stage: build
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: never
+    - exists: *code_files
+  script:
+    - make build
+  artifacts:
+    paths: [dist/]
+
+# ---------------------------------------------------------------- release (main only)
+# Conventional-commit titles -> next semver -> git tag vX.Y.Z + GitLab release notes.
+# Needs a masked CI variable GITLAB_TOKEN (project access token, api + write_repository).
+qg:release:
+  extends: .qg-toolbox
+  stage: release
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - semantic-release --extends /opt/ci/releaserc.gitlab.json

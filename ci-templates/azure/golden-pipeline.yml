@@ -1,0 +1,170 @@
+# Azure Pipelines "extends" template: Platform/ci-templates  azure/golden-pipeline.yml
+# Teams extend it (see sample-service/azure-pipelines.yml). Prod environments carry a
+# "Required template" check, so only pipelines that extend THIS file can deploy.
+parameters:
+  - name: buildImage          # team's language SDK image; runs the Makefile targets
+    type: string
+    default: corpacr.azurecr.io/platform/build-python:3.12
+  - name: toolboxImage        # platform-owned gate tools (same image as GitLab, other registry)
+    type: string
+    default: corpacr.azurecr.io/platform/ci-toolbox:1.0.0
+  - name: registryConnection  # service connection to the ACR
+    type: string
+    default: platform-acr
+  - name: pool
+    type: object
+    default: {vmImage: ubuntu-latest}   # corporate: {name: linux-build-pool}
+  - name: minNewCoverage
+    type: number
+    default: 80
+  - name: minOverallCoverage
+    type: number
+    default: 0
+  - name: mode                # warn = report only (rollout phase 1), enforce = block the PR
+    type: string
+    default: enforce
+    values: [warn, enforce]
+  - name: deployStages       # team's own deploy stages; the template forces them main-only
+    type: stageList
+    default: []
+
+variables:
+  QG_MODE: ${{ parameters.mode }}   # read by static-lint.sh and quality_gate.py
+
+stages:
+  # ------------------------------------------------------------------ Validate
+  - stage: Validate
+    pool: ${{ parameters.pool }}
+    jobs:
+      - job: Detect
+        container: {image: '${{ parameters.toolboxImage }}', endpoint: '${{ parameters.registryConnection }}'}
+        steps:
+          - checkout: self
+          - bash: |
+              PROFILE_FILE="$(Agent.TempDirectory)/profile.env" detect-profile.sh
+              source "$(Agent.TempDirectory)/profile.env"
+              echo "##vso[task.setvariable variable=PROFILE;isOutput=true]$PROFILE"
+            name: detect
+            displayName: Detect repo profile
+
+      - job: PrTitle
+        condition: eq(variables['Build.Reason'], 'PullRequest')
+        container: {image: '${{ parameters.toolboxImage }}', endpoint: '${{ parameters.registryConnection }}'}
+        steps:
+          - checkout: none
+          - bash: |
+              url="$(System.CollectionUri)$(System.TeamProjectId)/_apis/git/repositories/$(Build.Repository.ID)/pullRequests/$(System.PullRequest.PullRequestId)?api-version=7.1"
+              title="$(curl -sf -H "Authorization: Bearer $SYSTEM_ACCESSTOKEN" "$url" | jq -r .title)"
+              lint-title.sh "$title"
+            displayName: Lint PR title (becomes squash commit message)
+            env:
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+
+      - job: StaticLint               # secrets, shellcheck, yamllint, checkov - ALL repos
+        container: {image: '${{ parameters.toolboxImage }}', endpoint: '${{ parameters.registryConnection }}'}
+        steps:
+          - checkout: self
+          - bash: static-lint.sh
+            displayName: Secrets / shell / YAML / IaC scan
+
+      - job: Contract
+        dependsOn: Detect
+        condition: and(succeeded(), eq(dependencies.Detect.outputs['detect.PROFILE'], 'code'))
+        container: {image: '${{ parameters.toolboxImage }}', endpoint: '${{ parameters.registryConnection }}'}
+        steps:
+          - checkout: self
+          - bash: check-contract.sh
+            displayName: Check Makefile contract
+
+  # ------------------------------------------------------------------ Test (code repos)
+  - stage: Test
+    dependsOn: Validate
+    condition: and(succeeded(), eq(dependencies.Validate.outputs['Detect.detect.PROFILE'], 'code'))
+    pool: ${{ parameters.pool }}
+    jobs:
+      - job: UnitTest
+        container: {image: '${{ parameters.buildImage }}', endpoint: '${{ parameters.registryConnection }}'}
+        steps:
+          - checkout: self
+          - bash: make setup && make lint && make coverage
+            displayName: make setup lint coverage
+          - task: PublishTestResults@2
+            condition: always()
+            inputs: {testResultsFormat: JUnit, testResultsFiles: 'reports/junit*.xml', failTaskOnFailedTests: true}
+          - task: PublishCodeCoverageResults@2
+            condition: always()
+            inputs: {summaryFileLocation: reports/coverage.xml}
+          - publish: reports
+            artifact: reports
+            condition: always()
+
+  # ------------------------------------------------------------------ Quality gate (code repos)
+  - stage: Quality
+    dependsOn: [Validate, Test]
+    condition: and(succeeded(), eq(dependencies.Validate.outputs['Detect.detect.PROFILE'], 'code'))
+    pool: ${{ parameters.pool }}
+    jobs:
+      - job: Gate
+        container: {image: '${{ parameters.toolboxImage }}', endpoint: '${{ parameters.registryConnection }}'}
+        steps:
+          - checkout: self
+            fetchDepth: 0               # diff-cover needs history
+            persistCredentials: true
+          - download: current
+            artifact: reports
+          - bash: |
+              cp -r "$(Pipeline.Workspace)/reports" ./reports
+              CMP=""
+              if [ "$(Build.Reason)" = "PullRequest" ]; then
+                target="$(System.PullRequest.TargetBranch)"; target="${target#refs/heads/}"
+                git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
+                CMP="--compare-branch=origin/$target"
+              fi
+              quality_gate.py --min-overall ${{ parameters.minOverallCoverage }} \
+                              --min-new ${{ parameters.minNewCoverage }} $CMP
+            displayName: Quality gate (tests, overall + new-code coverage)
+
+  # ------------------------------------------------------------------ Build (code repos, main only)
+  - stage: Build
+    dependsOn: [Validate, Quality]
+    condition: >-
+      and(succeeded(),
+          eq(variables['Build.SourceBranch'], 'refs/heads/main'),
+          eq(dependencies.Validate.outputs['Detect.detect.PROFILE'], 'code'))
+    pool: ${{ parameters.pool }}
+    jobs:
+      - job: Build
+        container: {image: '${{ parameters.buildImage }}', endpoint: '${{ parameters.registryConnection }}'}
+        steps:
+          - checkout: self
+          - bash: make build
+          - publish: dist
+            artifact: dist
+
+  # ------------------------------------------------------------------ Release (all repos, main only)
+  # not(failed()) instead of succeeded(): Build/Test are SKIPPED for iac/scripts repos,
+  # and those still get a version tag.
+  # Build Service identity needs "Contribute" + "Create tag" on the repo.
+  - stage: Release
+    dependsOn: [Validate, Test, Quality, Build]   # list ALL gates: a failed Test must block release
+    condition: and(not(failed()), not(canceled()), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    pool: ${{ parameters.pool }}
+    jobs:
+      - job: SemanticRelease
+        container: {image: '${{ parameters.toolboxImage }}', endpoint: '${{ parameters.registryConnection }}'}
+        steps:
+          - checkout: self
+            fetchDepth: 0
+            persistCredentials: true
+          - bash: semantic-release --extends /opt/ci/releaserc.azure.json
+            displayName: Tag vX.Y.Z from conventional commits
+
+  # ------------------------------------------------------------------ Team deploy stages
+  # The platform, not the team, decides when deploys may run: main only, after Release
+  # SUCCEEDED (the first deploy stage implicitly depends on Release). Any team-written
+  # "condition:" is dropped, so a team cannot write "condition: always()" to bypass gates.
+  - ${{ each stage in parameters.deployStages }}:
+      - ${{ each pair in stage }}:
+          ${{ if ne(pair.key, 'condition') }}:
+            ${{ pair.key }}: ${{ pair.value }}
+        condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
