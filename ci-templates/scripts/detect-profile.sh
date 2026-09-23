@@ -18,8 +18,8 @@ if [[ -f repo.yaml ]]; then
 fi
 
 # Build manifests that mean "this repo contains application code"
-code_markers=(pom.xml build.gradle build.gradle.kts '*.csproj' '*.sln' package.json
-              go.mod pyproject.toml setup.py Cargo.toml)
+code_markers=(pom.xml build.gradle build.gradle.kts settings.gradle settings.gradle.kts package.json
+              go.mod pyproject.toml setup.py '*.csproj' Cargo.toml)
 
 has_file() {  # has_file <pattern...> : true if any match within depth 4
   local args=() p

@@ -4,9 +4,10 @@
 Checks, in order:
   1. JUnit report(s) exist, contain > 0 tests, and 0 failures/errors.
   2. Overall line coverage >= --min-overall   (legacy repos start low, ratchet up).
-  3. Coverage of NEW/CHANGED lines >= --min-new (default 80) vs --compare-branch.
+  3. The coverage report's file paths resolve to files in the repo (else step 4 is blind).
+  4. Coverage of NEW/CHANGED lines >= --min-new (default 80) vs --compare-branch.
 
-Accepts Cobertura XML (Python, .NET/coverlet, JS/Jest, Go) or JaCoCo XML (Java).
+Accepts Cobertura XML (Go, Python, TypeScript/Node.js/Next.js via Jest) or JaCoCo XML (Java Maven/Gradle).
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 
 def fail(msg: str) -> None:
@@ -59,6 +61,35 @@ def overall_line_rate(path: str) -> float:
     return 0.0
 
 
+def check_paths_resolve(path: str) -> None:
+    """Fail if the coverage report's file paths don't point at files in this repo.
+
+    Otherwise diff-cover finds "no lines with coverage information" and the
+    new-code check passes silently (seen with ts-jest + TypeScript 6 + istanbul).
+    """
+    root = ET.parse(path).getroot()
+    files: list[str] = []
+    found = 0
+    if root.tag == "coverage":  # Cobertura
+        sources = [s.text or "" for s in root.iter("source")] or [""]
+        for cls in root.iter("class"):
+            fn = cls.get("filename", "")
+            files.append(fn)
+            if os.path.isfile(fn) or any(os.path.isfile(os.path.join(s, fn)) for s in sources):
+                found += 1
+    elif root.tag == "report":  # JaCoCo: <package name="com/x"><sourcefile name="A.java">
+        for pkg in root.iter("package"):
+            for sf in pkg.findall("sourcefile"):
+                rel = f"{pkg.get('name')}/{sf.get('name')}"
+                files.append(rel)
+                if next(Path(".").glob(f"**/{rel}"), None):
+                    found += 1
+    if files and found == 0:
+        fail(f"none of the {len(files)} files in {path} exist in this repo (e.g. '{files[0]}'). "
+             "The coverage report paths are broken, so new-code coverage can't be measured.")
+    print(f"coverage report maps to repo files: {found}/{len(files)}")
+
+
 def check_new_code(path: str, branch: str, minimum: float) -> None:
     if not shutil.which("diff-cover"):
         fail("diff-cover not installed in the toolbox image")
@@ -92,6 +123,7 @@ def main() -> None:
     if rate < a.min_overall:
         fail(f"overall coverage {rate:.1f}% is below the floor {a.min_overall:.0f}%")
 
+    check_paths_resolve(a.coverage)
     if a.compare_branch:
         check_new_code(a.coverage, a.compare_branch, a.min_new)
 

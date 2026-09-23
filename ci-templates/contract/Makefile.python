@@ -1,0 +1,23 @@
+# Makefile contract - Python starter (pyproject.toml with a [dev] extra: pytest, pytest-cov, ruff).
+# Ruff rule C90 enforces a cyclomatic-complexity limit.
+PY ?= python3
+
+.PHONY: setup lint test coverage build
+
+setup:
+	$(PY) -m pip install -q -e ".[dev]"
+
+lint:
+	$(PY) -m ruff check .
+	$(PY) -m ruff format --check .
+
+test:
+	$(PY) -m pytest -q
+
+coverage:
+	mkdir -p reports
+	$(PY) -m pytest -q --junitxml=reports/junit.xml \
+	  --cov=src --cov-report=xml:reports/coverage.xml --cov-report=term-missing
+
+build:
+	$(PY) -m pip wheel -q --no-deps -w dist .

@@ -1,10 +1,12 @@
 # GitLab CI/CD component: platform/ci-templates/golden-pipeline
-# Teams include it with ONE line (see sample-service/.gitlab-ci.yml).
+# Teams include it with ONE line (see samples/*/.gitlab-ci.yml).
 # GitLab requires components to live in templates/ at the repo root.
 spec:
   inputs:
     build_image:
-      description: Image containing the team's language SDK + make. Runs the Makefile targets.
+      description: >-
+        Image with the team's language SDK + make, e.g. build-go:1.24, build-python:3.12,
+        build-java-maven:17, build-java-gradle:21, build-node:22 (Node, TypeScript, Next.js).
       default: registry.corp.example/platform/build-python:3.12
     toolbox_image:
       description: Platform-owned image with all gate tools (see toolbox/Dockerfile).
@@ -41,12 +43,13 @@ stages: [validate, test, quality, build, release]
   - pom.xml
   - build.gradle
   - build.gradle.kts
-  - "**/*.csproj"
-  - "**/*.sln"
-  - package.json
+  - settings.gradle
+  - settings.gradle.kts
+  - package.json          # Node.js, TypeScript, Next.js
   - go.mod
   - pyproject.toml
   - setup.py
+  - "**/*.csproj"
 
 .qg-toolbox:
   image: $[[ inputs.toolbox_image ]]

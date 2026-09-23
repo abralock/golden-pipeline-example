@@ -1,5 +1,5 @@
 # Azure Pipelines "extends" template: Platform/ci-templates  azure/golden-pipeline.yml
-# Teams extend it (see sample-service/azure-pipelines.yml). Prod environments carry a
+# Teams extend it (see samples/*/azure-pipelines.yml). Prod environments carry a
 # "Required template" check, so only pipelines that extend THIS file can deploy.
 parameters:
   - name: buildImage          # team's language SDK image; runs the Makefile targets

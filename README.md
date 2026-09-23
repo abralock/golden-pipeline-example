@@ -1,24 +1,50 @@
 # Golden Pipeline example: one quality standard for GitLab + Azure DevOps
 
+Stacks covered: **Go · Python · Java (Maven + Gradle, JDK 17/21) · TypeScript / Node.js · Next.js**, plus YAML/shell/Terraform-only repos.
+
+Full explanation: [`docs/golden-pipeline-explained.md`](docs/golden-pipeline-explained.md)
+
 ```
-ci-templates/                 <- owned by the PLATFORM team (one repo, versioned with tags)
-  scripts/                    <- the actual gate logic, shared by both CI systems
-    detect-profile.sh         code | iac | scripts | config  (+ blocks "declare iac to skip tests")
-    check-contract.sh         Makefile must have setup/lint/test/coverage/build WITH recipes
-    lint-title.sh             MR/PR title = conventional commit + work item (AB#123 / PAY-123)
-    static-lint.sh            ALL repos: gitleaks, shellcheck, yamllint, checkov
-    quality_gate.py           tests > 0, 0 failures, overall floor, 80% on NEW lines (diff-cover)
-    releaserc.*.json          semantic-release config (version tags from commit titles)
-  toolbox/Dockerfile          image containing all of the above, pushed to both registries
+ci-templates/                     <- owned by the PLATFORM team (one repo, versioned with tags)
+  scripts/                        <- the actual check logic, shared by both CI systems
+    detect-profile.sh             code | iac | scripts | config  (+ blocks "declare iac to skip tests")
+    check-contract.sh             Makefile must have setup/lint/test/coverage/build WITH recipes
+    lint-title.sh                 MR/PR title = conventional commit + work item (AB#123 / PAY-123)
+    static-lint.sh                ALL repos: gitleaks, shellcheck, yamllint, checkov
+    quality_gate.py               tests > 0, 0 failures, overall floor, report paths valid, 80% on NEW lines
+    releaserc.*.json              semantic-release config (version tags from commit titles)
+  toolbox/Dockerfile              image containing all of the above, pushed to both registries
   templates/golden-pipeline.yml   GitLab CI/CD component
   azure/golden-pipeline.yml       Azure Pipelines extends-template
-  contract/Makefile.{java,dotnet,node}  starters for other stacks
-  policies/                   GitLab pipeline execution policy (phase-3 enforcement)
+  contract/Makefile.<stack>       starters: go, python, maven, gradle, node-ts, nextjs
+  policies/                       GitLab pipeline execution policy (phase-3 enforcement)
 
-sample-service/               <- what a TEAM owns (Python example)
-  Makefile  repo.yaml  .gitlab-ci.yml  azure-pipelines.yml  AGENTS.md  CODEOWNERS
-sample-iac/                   <- Terraform + shell only: no coverage gate, still scanned
+samples/                          <- what a TEAM owns; each passes the checks
+  go-service/                     Go 1.24          go test + go-junit-report + gocover-cobertura
+  python-service/                 Python 3.12      pytest + pytest-cov + ruff
+  java-maven-service/             Java 17, Maven   JUnit 5 + JaCoCo + Checkstyle
+  java-gradle-service/            Java 21, Gradle  JUnit 5 + JaCoCo + Checkstyle
+  node-ts-service/                Node 22, TS      Jest + ts-jest + ESLint
+  nextjs-app/                     Next.js 16       Jest (next/jest) + Testing Library + ESLint
+  iac-terraform/                  Terraform+shell  no coverage check; still scanned
+
+tools/gen_sample_files.py         regenerates repo.yaml / pipelines / AGENTS.md / CODEOWNERS per sample
 ```
+
+Each sample has the same team-owned files: `Makefile`, `repo.yaml`, `.gitlab-ci.yml`, `azure-pipelines.yml`, `AGENTS.md`, `CODEOWNERS`.
+
+## The Makefile contract, per stack
+
+| Stack | `lint` | `coverage` → `reports/junit*.xml` | `coverage` → `reports/coverage.xml` |
+|---|---|---|---|
+| Go | gofmt, go vet (+ golangci-lint) | go-junit-report | gocover-cobertura (Cobertura) |
+| Python | ruff (incl. complexity C90) | pytest `--junitxml` | pytest-cov (Cobertura) |
+| Java / Maven | Checkstyle (complexity ≤ 8) | Surefire XML | JaCoCo |
+| Java / Gradle | Checkstyle (complexity ≤ 8) | Gradle test XML | JaCoCo |
+| TypeScript / Node | ESLint (complexity ≤ 8) + `tsc --noEmit` | jest-junit | Jest, V8 provider (Cobertura) |
+| Next.js | ESLint (next config, complexity ≤ 8) + `tsc` | jest-junit | Jest via next/jest, V8 provider (Cobertura) |
+
+Java teams set `coverage_format: jacoco` (GitLab). Different JDK versions only change `build_image`.
 
 ## Pipeline flow
 
@@ -29,35 +55,46 @@ sample-iac/                   <- Terraform + shell only: no coverage gate, still
 | validate | static-lint | all | secret found, shellcheck/yamllint/checkov fail |
 | validate | contract | code | Makefile target missing or recipe-less |
 | test | unit-test | code | `make setup && make lint && make coverage` fails |
-| quality | quality-gate | code | 0 tests, failures, below overall floor, **< 80% on new lines** |
+| quality | quality-gate | code | 0 tests, failures, below overall floor, broken report paths, **< 80% on new lines** |
 | build | build | code, main only | `make build` fails |
 | release | release | main only | creates tag vX.Y.Z from commit titles |
-| deploy | team stages | main only | platform forces the condition; teams can't bypass |
+| deploy | team stages | main only | the platform forces the condition; teams can't bypass |
 
-## Tested locally (in this package)
+## What was tested in the sandbox
 
-- Contract check passes/fails correctly (including a `.PHONY`-only target trick).
-- Python sample: lint → 6 tests → 100% coverage → gate PASS → wheel built.
-- MR adding untested `CouponDiscount`: overall 87.8% (would pass an overall rule) but new code 37% → **FAIL**. After adding a test → PASS.
-- Failing test → FAIL. JaCoCo XML parsed. `QG_MODE=warn` → reports but exit 0.
-- Title lint: 2 valid / 3 invalid titles behave as expected.
-- IaC repo: profile `iac`, checkov found 7 issues → 4 fixed, 3 justified with inline `#checkov:skip` → PASS. Planted token → gitleaks FAIL.
-- All YAML passes yamllint, all scripts pass shellcheck.
+| Sample | lint | tests | coverage | check | build | notes |
+|---|---|---|---|---|---|---|
+| go-service | ✅ | ✅ 10 | 83.9% | ✅ PASS | ✅ binary runs | MR with untested `Bulk()` → new code 0% → **blocked** |
+| python-service | ✅ | ✅ 7 | 100% | ✅ PASS | ✅ wheel | MR with untested class: overall 87.8%, new 37% → **blocked** |
+| node-ts-service | ✅ | ✅ 6 | 100% | ✅ PASS | ✅ dist/ | MR with untested class → new 20% → **blocked**; complexity 9 → ESLint error |
+| nextjs-app | ✅ | ✅ 8 | 100% | ✅ PASS | ✅ standalone server serves page | |
+| java-maven-service | ⚠️ | ⚠️ | – | JaCoCo parsing ✅ | – | Maven Central blocked in sandbox: sources + tests compiled (JDK 17), logic verified |
+| java-gradle-service | ⚠️ | ⚠️ | – | JaCoCo parsing ✅ | – | `gradle compileJava` ✅ offline; tests need Maven Central |
+| iac-terraform | ✅ | – | – | ✅ | – | checkov 7 findings → 4 fixed, 3 documented exceptions; planted secret caught |
+
+Other checks: contract check (including a `.PHONY`-only trick), MR title lint, warn mode, profile dodge attempt,
+yamllint on all YAML, shellcheck on all scripts.
+
+**Found and fixed during testing:** with ts-jest + TypeScript 6, Jest's default (istanbul) coverage writes
+broken file paths, so the new-code check saw nothing and **passed silently**. Fixes: samples use
+`coverageProvider: "v8"`, and `quality_gate.py` now **fails** if the report's paths don't match repo files.
 
 ## Not tested here (validate in your environment)
 
+- Java builds end to end (need Maven Central / your Artifactory mirror).
 - The toolbox Docker build (no Docker daemon in the sandbox).
-- GitLab component + Azure template on real runners/agents. Run GitLab "CI Lint" and an Azure
-  "Validate" on a pilot project first, and check field names against your GitLab/Azure versions
-  (especially the pipeline execution policy, which requires GitLab Ultimate).
+- GitLab component + Azure template on real runners/agents: run GitLab "CI Lint" and an Azure
+  "Validate" on a pilot project first; check the pipeline execution policy fields against your GitLab version.
 - semantic-release on Azure Repos: Build Service identity needs Contribute + Create tag.
+- Corporate package mirrors: set GOPROXY, Maven `settings.xml`, Gradle `distributionUrl`, npm/pip
+  registries to Artifactory/Nexus in the build images.
 
 ## Platform settings (outside YAML)
 
-**GitLab** – squash-merge on MRs, "Pipelines must succeed", MR approvals + CODEOWNERS,
-protected `main`, protected environments; later: compliance framework + pipeline execution policy.
+**GitLab**: squash-merge on MRs, "Pipelines must succeed", MR approvals + CODEOWNERS,
+protected `main`, protected environments; later, a compliance framework + pipeline execution policy.
 
-**Azure DevOps** – on `main`: require PR, squash merge only, build validation (this pipeline),
+**Azure DevOps**: on `main`, require PR, squash merge only, build validation (this pipeline),
 "Check for linked work items", required reviewers + auto-include code owners.
 On prod environments: Approvals + **Required template** check → `Platform/ci-templates`
 `azure/golden-pipeline.yml`.

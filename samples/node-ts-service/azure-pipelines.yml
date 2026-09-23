@@ -1,0 +1,38 @@
+# Everything a team writes on Azure DevOps. The checks live in the platform template.
+# PR builds are triggered by the branch policy "Build validation", not by a pr: block.
+trigger:
+  branches:
+    include: [main]
+
+resources:
+  repositories:
+    - repository: templates
+      type: git
+      name: Platform/ci-templates
+      ref: refs/tags/v1.0.0        # pin a version; the platform ships upgrades as new tags
+
+extends:
+  template: azure/golden-pipeline.yml@templates
+  parameters:
+    buildImage: corpacr.azurecr.io/platform/build-node:22
+    minOverallCoverage: 80
+    deployStages:
+      - stage: DeployDev
+        jobs:
+          - deployment: Deploy
+            environment: node-ts-service-dev
+            strategy:
+              runOnce:
+                deploy:
+                  steps:
+                    - script: echo "deploy to dev"
+      - stage: DeployProd
+        dependsOn: DeployDev
+        jobs:
+          - deployment: Deploy
+            environment: node-ts-service-prod    # has Approvals + "Required template" checks
+            strategy:
+              runOnce:
+                deploy:
+                  steps:
+                    - script: echo "deploy to prod"

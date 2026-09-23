@@ -1,0 +1,6 @@
+# Repo metadata read by the platform (inventory, dashboards, gate profile).
+kind: service        # service | library | iac | scripts | config
+owner: team-pricing-node
+tier: 1              # 1 = customer-facing prod, 2 = internal, 3 = tooling
+language: typescript
+work_items: azure-boards   # azure-boards | jira

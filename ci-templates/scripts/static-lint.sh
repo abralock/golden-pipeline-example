@@ -3,12 +3,16 @@
 # Each check runs only if matching files exist, so no repo needs to "opt out".
 set -uo pipefail
 
-prune=(-path ./.git -o -path ./node_modules -o -path ./vendor -o -path ./.venv)
+# Generated output and dependencies are never scanned (same list in gitleaks.toml / yamllint.yml).
+prune=(-path ./.git -o -path ./node_modules -o -path ./vendor -o -path ./.venv -o -path ./.next
+       -o -path ./dist -o -path ./build -o -path ./target -o -path ./.gradle -o -path ./reports)
 rc=0
 run() { echo "::: $*"; "$@" || rc=1; }
 
 # 1. Secrets - always
-run gitleaks dir . --redact --no-banner
+gl_cfg="$(dirname "$0")/gitleaks.toml"
+[[ -f .gitleaks.toml ]] && gl_cfg=.gitleaks.toml
+run gitleaks dir . --redact --no-banner --config "$gl_cfg"
 
 # 2. Shell scripts
 mapfile -d '' sh_files < <(find . \( "${prune[@]}" \) -prune -o -type f -name '*.sh' -print0)
@@ -24,7 +28,7 @@ fi
 # 4. IaC security (Terraform, Bicep, Helm, K8s, Dockerfiles)
 if [[ -n "$(find . \( "${prune[@]}" \) -prune -o -type f \( -name '*.tf' -o -name '*.bicep' \
       -o -name 'Chart.yaml' -o -name 'kustomization.yaml' -o -name 'Dockerfile' \) -print -quit)" ]]; then
-  run checkov -d . --compact --quiet --skip-download
+  run checkov -d . --compact --quiet --skip-download --skip-path node_modules --skip-path .next
 fi
 
 # Rollout phase 1: QG_MODE=warn reports findings but never blocks.

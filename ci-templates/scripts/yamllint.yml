@@ -1,5 +1,15 @@
 # Platform default yamllint rules. A repo may ship its own .yamllint to be stricter.
 extends: default
+ignore: |
+  node_modules/
+  .next/
+  dist/
+  build/
+  target/
+  vendor/
+  .venv/
+  .gradle/
+  reports/
 rules:
   line-length: {max: 160, level: warning}
   document-start: disable

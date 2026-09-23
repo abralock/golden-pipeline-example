@@ -1,0 +1,11 @@
+# Platform gitleaks config: default rules, minus generated build/dependency output.
+# (e.g. Next.js writes build-time encryption keys into .next/ - not a leaked secret.)
+# A repo can ship its own .gitleaks.toml to override this.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "generated build output and third-party dependencies"
+paths = [
+  '''(^|/)(node_modules|\.next|dist|build|target|vendor|\.venv|\.gradle|reports|coverage)/''',
+]
