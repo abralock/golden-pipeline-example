@@ -4,10 +4,11 @@
 Checks, in order:
   1. JUnit report(s) exist, contain > 0 tests, and 0 failures/errors.
   2. Overall line coverage >= --min-overall   (legacy repos start low, ratchet up).
-  3. The coverage report's file paths resolve to files in the repo (else step 4 is blind).
-  4. Coverage of NEW/CHANGED lines >= --min-new (default 80) vs --compare-branch.
+  3. The coverage report's file paths resolve to files in the repo (else step 5 is blind).
+  4. Every changed source file in the MR appears in the coverage report (else step 5 skips it).
+  5. Coverage of NEW/CHANGED lines >= --min-new (default 80) vs --compare-branch.
 
-Accepts Cobertura XML (Go, Python, TypeScript/Node.js/Next.js via Jest) or JaCoCo XML (Java Maven/Gradle).
+Accepts Cobertura XML (Go, Python, .NET, TypeScript/Node.js/Next.js/Angular) or JaCoCo XML (Java).
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+from fnmatch import fnmatch
 from pathlib import Path
 
 
@@ -90,6 +92,53 @@ def check_paths_resolve(path: str) -> None:
     print(f"coverage report maps to repo files: {found}/{len(files)}")
 
 
+CODE_EXT = (".go", ".py", ".java", ".kt", ".cs", ".ts", ".tsx", ".js", ".jsx", ".mjs")
+# Tests, generated/config files and app bootstrap files are not expected in coverage reports.
+NOT_MEASURED = [
+    "*_test.go", "*/test_*.py", "test_*.py", "*_test.py", "*/conftest.py", "*.spec.ts", "*.spec.tsx",
+    "*.test.ts", "*.test.tsx", "*.test.js", "*.d.ts", "*/tests/*", "tests/*", "*/test/*", "test/*",
+    "*/__tests__/*", "__tests__/*", "*/src/test/*", "src/test/*", "*.Tests/*", "*/*.Tests/*",
+    "*.config.js", "*.config.ts", "*.config.mjs", "*.config.cjs", "src/main.ts", "*/app.config.ts",
+    "*/Program.cs", "Program.cs", "tools/*", "scripts/*",
+]
+
+
+def measured_files(path: str) -> set[str]:
+    """Repo-relative paths of every file that appears in the coverage report."""
+    root = ET.parse(path).getroot()
+    out: set[str] = set()
+    if root.tag == "coverage":
+        sources = [s.text or "" for s in root.iter("source")] or [""]
+        for cls in root.iter("class"):
+            fn = cls.get("filename", "")
+            for cand in [fn] + [os.path.join(s, fn) for s in sources]:
+                if os.path.isfile(cand):
+                    out.add(os.path.relpath(os.path.realpath(cand), os.path.realpath(".")))
+                    break
+    elif root.tag == "report":
+        for pkg in root.iter("package"):
+            for sf in pkg.findall("sourcefile"):
+                for hit in Path(".").glob(f"**/{pkg.get('name')}/{sf.get('name')}"):
+                    out.add(str(hit))
+    return out
+
+
+def check_changed_files_measured(path: str, branch: str, extra_ignore: list[str]) -> None:
+    """Fail if the MR changes source files that the coverage report doesn't contain at all.
+
+    diff-cover silently skips such files ("no coverage information"), e.g. a new component
+    that no test imports (Angular/Vite tree-shaking) or a path missing from collectCoverageFrom.
+    """
+    out = subprocess.run(["git", "diff", "--name-only", "--diff-filter=AM", f"{branch}...HEAD"],
+                         capture_output=True, text=True, check=False).stdout.split()
+    ignore = NOT_MEASURED + extra_ignore
+    changed = [f for f in out if f.endswith(CODE_EXT) and not any(fnmatch(f, p) for p in ignore)]
+    missing = sorted(set(changed) - measured_files(path))
+    if missing:
+        fail("changed source files are not in the coverage report at all (untested, or excluded by the "
+             f"coverage config): {', '.join(missing)}")
+
+
 def check_new_code(path: str, branch: str, minimum: float) -> None:
     if not shutil.which("diff-cover"):
         fail("diff-cover not installed in the toolbox image")
@@ -111,6 +160,8 @@ def main() -> None:
     ap.add_argument("--min-new", type=float, default=80)
     ap.add_argument("--compare-branch", default="",
                     help="e.g. origin/main. Empty = skip new-code check (main branch builds)")
+    ap.add_argument("--not-measured", action="append", default=[],
+                    help="extra glob of changed files allowed to be absent from the coverage report")
     a = ap.parse_args()
 
     check_junit(a.junit)
@@ -125,6 +176,7 @@ def main() -> None:
 
     check_paths_resolve(a.coverage)
     if a.compare_branch:
+        check_changed_files_measured(a.coverage, a.compare_branch, a.not_measured)
         check_new_code(a.coverage, a.compare_branch, a.min_new)
 
     print("PASS: quality gate")

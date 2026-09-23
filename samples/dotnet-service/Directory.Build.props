@@ -1,0 +1,15 @@
+<Project>
+  <!-- Shared by every project in the repo. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>          <!-- .NET 8 LTS; .NET 10 LTS = change here + build image -->
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <AnalysisLevel>latest</AnalysisLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Complexity threshold for CA1502 (a SOLID/SRP proxy), enabled in .editorconfig -->
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)CodeMetricsConfig.txt" />
+  </ItemGroup>
+</Project>

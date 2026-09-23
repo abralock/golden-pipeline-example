@@ -1,0 +1,13 @@
+root = true
+
+[*]
+indent_style = space
+insert_final_newline = true
+
+[*.cs]
+indent_size = 4
+# Maintainability: cyclomatic complexity limit (threshold in CodeMetricsConfig.txt)
+dotnet_diagnostic.CA1502.severity = error
+# Unused usings / variables fail the build
+dotnet_diagnostic.IDE0005.severity = warning
+csharp_style_namespace_declarations = file_scoped:warning

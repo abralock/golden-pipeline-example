@@ -6,7 +6,8 @@ spec:
     build_image:
       description: >-
         Image with the team's language SDK + make, e.g. build-go:1.24, build-python:3.12,
-        build-java-maven:17, build-java-gradle:21, build-node:22 (Node, TypeScript, Next.js).
+        build-java-maven:17, build-java-gradle:21, build-dotnet:8.0,
+        build-node:22 (Node, TypeScript, Next.js, Angular).
       default: registry.corp.example/platform/build-python:3.12
     toolbox_image:
       description: Platform-owned image with all gate tools (see toolbox/Dockerfile).
@@ -45,11 +46,12 @@ stages: [validate, test, quality, build, release]
   - build.gradle.kts
   - settings.gradle
   - settings.gradle.kts
-  - package.json          # Node.js, TypeScript, Next.js
+  - package.json          # Node.js, TypeScript, Next.js, Angular
   - go.mod
   - pyproject.toml
   - setup.py
-  - "**/*.csproj"
+  - "**/*.csproj"         # .NET
+  - "*.sln"
 
 .qg-toolbox:
   image: $[[ inputs.toolbox_image ]]

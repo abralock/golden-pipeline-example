@@ -1,0 +1,16 @@
+# Everything a team writes on GitLab. The checks live in the platform component.
+include:
+  - component: $CI_SERVER_FQDN/platform/ci-templates/golden-pipeline@1.0.0
+    inputs:
+      build_image: registry.corp.example/platform/build-dotnet:8.0
+      min_overall_coverage: 80     # new service: 80% from day one (legacy repos: start at today's number)
+
+# Team-owned deploy job. Protected environments are configured in GitLab settings.
+deploy-dev:
+  stage: release
+  needs: [qg:build]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  environment: dev
+  script:
+    - echo "deploy dist/ to dev"

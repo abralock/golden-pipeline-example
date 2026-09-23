@@ -1,0 +1,8 @@
+# Human approval is still required; AI review is a first pass only.
+*                     @team-storefront-ng
+# The platform team must approve changes that could weaken the checks.
+/Makefile             @platform/architects
+/repo.yaml            @platform/architects
+/.gitlab-ci.yml       @platform/architects
+/azure-pipelines.yml  @platform/architects
+/eslint.config.js     @platform/architects

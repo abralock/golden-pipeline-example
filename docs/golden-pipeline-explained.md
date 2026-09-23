@@ -1,6 +1,6 @@
 # Golden Pipeline: One Quality Standard for Every Repo
 
-**Scope:** ~4,000 IT staff · GitLab + Azure DevOps · Go, Python, Java (Maven + Gradle), TypeScript/Node.js, Next.js, plus YAML/shell/IaC-only repos
+**Scope:** ~4,000 IT staff · GitLab + Azure DevOps · Go, Python, Java (Maven + Gradle), .NET (C#), TypeScript/Node.js, Next.js, Angular, plus YAML/shell/IaC-only repos
 **Status:** Proposal with a working reference implementation (`abralock/golden-pipeline-example`)
 
 ---
@@ -76,7 +76,7 @@ flowchart LR
 | `toolbox/Dockerfile` | One pinned image with every check tool, pushed to both registries |
 | `templates/golden-pipeline.yml` | GitLab CI/CD component (teams `include` it) |
 | `azure/golden-pipeline.yml` | Azure Pipelines template (teams `extends` it) |
-| `contract/Makefile.<stack>` | Starter Makefiles: `go`, `python`, `maven`, `gradle`, `node-ts`, `nextjs` |
+| `contract/Makefile.<stack>` | Starter Makefiles: `go`, `python`, `maven`, `gradle`, `dotnet`, `node-ts`, `nextjs`, `angular` |
 | `policies/` | GitLab policy that forces the checks into every pipeline (phase 3) |
 
 **What each team owns**
@@ -116,12 +116,18 @@ How each of our stacks meets the contract. Every row has a working sample repo i
 | **Python** | `build-python:3.12` | ruff (incl. complexity rule C90) | pytest `--junitxml` | pytest-cov → Cobertura |
 | **Java / Maven** | `build-java-maven:17` | Checkstyle (complexity ≤ 8) | Surefire XML | JaCoCo |
 | **Java / Gradle** | `build-java-gradle:21` | Checkstyle (complexity ≤ 8) | Gradle test XML | JaCoCo |
+| **.NET (C#)** | `build-dotnet:8.0` | `dotnet format` + build with warnings as errors, CA1502 (complexity ≤ 8) | JunitXml.TestLogger | coverlet → ReportGenerator merge → Cobertura |
 | **TypeScript / Node.js** | `build-node:22` | ESLint (complexity ≤ 8) + `tsc --noEmit` | jest-junit | Jest (V8 provider) → Cobertura |
 | **Next.js** | `build-node:22` | ESLint (next config, complexity ≤ 8) + `tsc` | jest-junit | Jest via `next/jest` (V8) → Cobertura |
+| **Angular** | `build-node:22` | angular-eslint (complexity ≤ 8) + `tsc` | Vitest junit reporter | `ng test --coverage` (Vitest V8), all app files included → Cobertura |
 
 **Two Java versions?** The JDK version comes from the build image (e.g. JDK 17 for Maven services, JDK 21 for Gradle services). The Makefile and the checks stay the same; Java teams only set `coverage_format: jacoco`.
 
 **Next.js:** business logic goes in `lib/` and UI in `components/`, and both are unit-tested and counted toward the 80%. Thin `app/` route files are covered by E2E tests (Playwright), which run separately. Which files count toward coverage (`collectCoverageFrom` in `jest.config.js`) is protected by CODEOWNERS, so a team can't quietly exclude its hard-to-test files.
+
+**.NET:** solutions with several test projects produce one coverage file per project; the starter merges them with ReportGenerator into one Cobertura report. The complexity limit uses the built-in .NET analyzer rule CA1502, and `Directory.Build.props` turns warnings into errors, so no extra analyzer packages are needed.
+
+**Angular:** Angular 21+ uses Vitest by default, run through `ng test`. The starter passes `--coverage-include` for all app files. Without it, the test build leaves out files that no test imports, and a new untested component would never show up in the coverage report. Karma-based projects either migrate to Vitest or configure karma-coverage (Cobertura) and a JUnit reporter to write the same two report files.
 
 ### 5.2 `repo.yaml`
 
@@ -197,7 +203,10 @@ Measured on the reference implementation. A developer adds new code **without te
 | Python | new `CouponDiscount` class | **87.8%** | **37%** | ❌ Blocked |
 | Go | new `Bulk()` function | 71% | **0%** | ❌ Blocked |
 | TypeScript | new `CouponDiscount` class | 81% | **20%** | ❌ Blocked |
+| Angular | new `Banner` component | 100%* | **0%** | ❌ Blocked |
 | Python | same change **with tests** | 100% | 100% | ✅ Pass |
+
+\* Without the fix described below, Angular left the untested component out of the report entirely, so both numbers looked perfect.
 
 An "80% overall" rule would have **let the untested code through**, because the old, well-tested code hides it. Checking new code:
 
@@ -213,6 +222,13 @@ In the TypeScript sample, Jest's default coverage engine (with ts-jest and TypeS
 
 - The samples use Jest's V8 coverage provider, which writes correct paths.
 - `quality_gate.py` now **fails** when the report's file paths don't match files in the repo, so a tool quirk in any language can't silently turn the check off.
+
+Angular had a similar gap: its test build leaves out files that no test imports, so a new untested component never appeared in the report. Fixes:
+
+- The Angular starter includes all app files in coverage (`--coverage-include`).
+- `quality_gate.py` now **fails** an MR that changes source files missing from the coverage report entirely, in any language, instead of skipping them.
+
+One limit remains in Angular: code that nothing imports at all (dead code) isn't measured. A dead-code tool can catch that.
 
 This is why the platform team, not each team, owns the check logic: one fix protects every repo.
 
@@ -290,7 +306,7 @@ In the reference repo, checkov found 7 findings. 4 were fixed and 3 were documen
 
 | Phase | When | What | Blocks merges? |
 |---|---|---|---|
-| **0. Build & pilot** | Month 1 | Publish toolbox image, templates and build images; onboard one volunteer team per stack (Go, Python, Java Maven, Java Gradle, Node/TS, Next.js, IaC) | Pilot only |
+| **0. Build & pilot** | Month 1 | Publish toolbox image, templates and build images; onboard one volunteer team per stack (Go, Python, Java Maven, Java Gradle, .NET, Node/TS, Next.js, Angular, IaC) | Pilot only |
 | **1. Warn mode** | Months 2–3 | All repos with commits in the last 90 days include the pipeline with `mode: warn`; publish per-team results | No |
 | **2. Enforce tier 1** | Month 4 | `mode: enforce` for customer-facing services; new-code 80% active | Tier 1 |
 | **3. Enforce all + lock** | Months 5–6 | All tiers enforced; GitLab policy and Azure Required-template checks switched on | All |
@@ -324,9 +340,9 @@ Only active repos are included. Dormant repos are archived or onboarded when the
 |---|---|
 | Teams see it as bureaucracy | Warn mode first; one-line onboarding; starter Makefiles; visible benefit (auto versioning, MR coverage view) |
 | Coverage gaming with empty tests | Zero-test check; mutation testing; human review |
-| Coverage tool quirk makes a check pass silently | Check fails if report paths don't match repo files; platform fixes once for everyone |
+| Coverage tool quirk makes a check pass silently | Check fails if report paths don't match repo files, or if changed files are missing from the report; platform fixes once for everyone |
 | Blocked public registries (Go proxy, Maven Central, npm) | Build images point GOPROXY, Maven/Gradle and npm/pip at Artifactory/Nexus |
-| Tool versions drift (e.g. ESLint 10 vs Next.js plugins, TypeScript 7) | Platform maintains tested versions in the starter Makefiles and samples |
+| Tool versions drift (e.g. ESLint 10 vs Next.js plugins, TypeScript 7, Angular 22 needing a newer Node) | Platform maintains tested versions in the starter Makefiles and samples |
 | Pipeline change breaks 1,000s of repos | Templates are versioned; teams pin `@1.0.0`; canary rollout to pilot teams |
 | Security scan noise on day 1 | Documented inline exceptions; warn mode; tune baseline rules centrally |
 | Two CI platforms drift | All logic in shared scripts + one image; templates are thin wrappers |
@@ -343,15 +359,18 @@ Only active repos are included. Dormant repos are archived or onboarded when the
 | Python 3.12 | ✅ | ✅ 7 | 100% | ✅ | ✅ wheel |
 | TypeScript / Node 22 | ✅ | ✅ 6 | 100% | ✅ | ✅ dist/ |
 | Next.js 16 | ✅ | ✅ 8 | 100% | ✅ | ✅ standalone server serves the page |
+| Angular 21 | ✅ | ✅ 9 | 100% | ✅ | ✅ production bundle |
 | Java 17 / Maven | compiled ✅ | compiled ✅ | – | JaCoCo parsing ✅ | – |
 | Java 21 / Gradle | compiled ✅ | compiled ✅ | – | JaCoCo parsing ✅ | – |
+| .NET 8 (C#) | ✅ build, format, CA1502 | 6/6 via stub runner | – | Cobertura mapping ✅ | – |
 | Terraform + shell | ✅ | – | – | ✅ | – |
 
 Also verified: the contract check (including a target that exists in name only), MR title check, warn mode, the "declare iac to skip tests" attempt, a planted secret being caught, and yamllint/shellcheck on all platform files.
 
 **To validate in the corporate environment:**
 
-- Java builds end to end (the sandbox couldn't reach Maven Central; use your Artifactory/Nexus mirror)
+- Java and .NET builds end to end (the sandbox couldn't reach Maven Central or NuGet; use your Artifactory/Nexus mirror). .NET test package versions were checked against upstream release tags.
+- Angular 22 (needs Node ≥ 22.22.3; the sample uses Angular 21, which is still supported)
 - Toolbox and build images (behind the corporate proxy and mirrors)
 - GitLab component and Azure template on real runners and agents
 - GitLab pipeline execution policy syntax for your GitLab version
@@ -368,6 +387,8 @@ Also verified: the contract check (including a target that exists in name only),
 **Can a team lower the 80%?** No. `min_new_coverage` is set by the platform, and changes to pipeline files need platform approval through CODEOWNERS.
 
 **We have Java on two versions. Do they need different pipelines?** No. The JDK comes from the build image (`build-java-maven:17`, `build-java-gradle:21`, …). Maven and Gradle each have a starter Makefile, and both produce the same JaCoCo report.
+
+**Which .NET and Angular versions?** The .NET sample targets .NET 8 LTS; moving to .NET 10 LTS means changing `TargetFramework` and the build image. The Angular sample uses Angular 21 with Vitest; Angular 22 works the same way but needs a newer Node.js in the build image.
 
 **Does E2E testing (Playwright/Cypress) count toward the 80%?** No. The 80% rule is for unit tests, which are fast and run on every MR. E2E tests are encouraged and can run as a separate job, but they don't replace unit tests for `lib/` and `components/`.
 
